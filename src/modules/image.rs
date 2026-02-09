@@ -107,8 +107,12 @@ impl ImageBuffer {
 
         if width == FRAME_WIDTH && height == FRAME_HEIGHT {
             // 直接复制并转换 BGR
-            for i in 0..FRAME_SIZE {
-                self.data[i] = data[i + 2];
+            for i in 0..FRAME_SIZE / 3 {
+                let dst_idx = i * 3;
+                let src_idx = i * 3;
+                self.data[dst_idx] = data[src_idx + 2];     // B -> R
+                self.data[dst_idx + 1] = data[src_idx + 1]; // G -> G
+                self.data[dst_idx + 2] = data[src_idx];     // R -> B
             }
         } else {
             // 缩放到合适大小

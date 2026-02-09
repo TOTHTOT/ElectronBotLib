@@ -47,7 +47,7 @@ impl UsbDevice {
         }
 
         // 如果需要，发送零包
-        if data.len() % 512 == 0 {
+        if data.len().is_multiple_of(512) {
             if let Err(e) = self.handle.write_bulk(self.write_endpoint, &[], timeout) {
                 #[cfg(feature = "logging")]
                 log::error!("USB zero packet failed: {}", e);
@@ -77,12 +77,12 @@ impl UsbDevice {
 
     /// 带重试的发送。
     pub fn transmit_with_retry(&mut self, data: &[u8], max_retries: usize) -> Result<bool, String> {
-        for retry in 0..max_retries {
+        for _retry in 0..max_retries {
             match self.transmit(data) {
                 Ok(true) => return Ok(true),
                 _ => {
                     #[cfg(feature = "logging")]
-                    log::warn!("USB transmit retry {}/{}", retry + 1, max_retries);
+                    log::warn!("USB transmit retry {}/{}", _retry + 1, max_retries);
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             }

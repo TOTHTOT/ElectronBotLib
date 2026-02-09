@@ -219,11 +219,11 @@ impl ElectronBot {
         log::info!("从文件加载图片: {:?}", path.as_ref());
         self.image_buffer
             .load_from_file(path)
-            .map_err(|e| Error::ImageError(e))
+            .map_err(Error::ImageError)
     }
 
     /// 从 DynamicImage 设置图片
-    pub fn set_image_from_image(&mut self, img: &::image::DynamicImage) {
+    pub fn set_image_from_image(&mut self, img: &image::DynamicImage) {
         #[cfg(feature = "logging")]
         log::info!("从 DynamicImage 加载图片");
         self.image_buffer.load_from_image(img);
@@ -235,7 +235,7 @@ impl ElectronBot {
         log::info!("从原始数据加载图片: {}x{}", width, height);
         self.image_buffer
             .load_from_data(data, width, height)
-            .map_err(|e| Error::ImageError(e))
+            .map_err(Error::ImageError)
     }
 
     /// 设置纯色图片
@@ -514,6 +514,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unused_comparisons)]
     fn test_scan_devices() {
         let devices = ElectronBot::scan_devices();
         assert!(devices.len() >= 0);

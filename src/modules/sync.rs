@@ -63,29 +63,29 @@ pub fn sync(
     let data = image_buffer.as_data();
     let extra = extra_data.as_data();
 
-    for cycle in 0..context.cycles {
+    for _cycle in 0..context.cycles {
         #[cfg(feature = "logging")]
-        log::debug!("Sync cycle {}/{}", cycle + 1, context.cycles);
+        log::debug!("Sync cycle {}/{}", _cycle + 1, context.cycles);
 
         // 准备尾数据
         let mut tail_data = [0u8; TAIL_SIZE];
         let tail_start = PACKET_COUNT * PACKET_SIZE;
         tail_data[..192].copy_from_slice(&data[tail_start..tail_start + 192]);
-        tail_data[192..].copy_from_slice(&extra);
+        tail_data[192..].copy_from_slice(extra);
 
         // 尝试接收数据
         let mut rx_buf = [0u8; 32];
         let mut received = false;
 
-        for retry in 0..3 {
+        for _retry in 0..3 {
             #[cfg(feature = "logging")]
-            log::debug!("Receive attempt {}/3", retry + 1);
+            log::debug!("Receive attempt {}/3", _retry + 1);
 
             // 尝试发送小包触发通信
             if usb.transmit(&tail_data[..8]).is_ok() {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 match usb.receive(&mut rx_buf) {
-                    Ok(read) if read == 32 => {
+                    Ok(32) => {
                         #[cfg(feature = "logging")]
                         log::debug!("Received 32 bytes from device");
                         received = true;
@@ -104,7 +104,7 @@ pub fn sync(
 
             // 直接尝试接收
             match usb.receive(&mut rx_buf) {
-                Ok(read) if read == 32 => {
+                Ok(32) => {
                     #[cfg(feature = "logging")]
                     log::debug!("Received 32 bytes from device");
                     received = true;
@@ -181,8 +181,8 @@ pub fn sync_joints(
 ) -> SyncResult {
     #[cfg(feature = "logging")]
     log::info!("Starting joints sync with angles: {:?}", angles.as_array());
-    let mut image = ImageBuffer::new();
+    let image = ImageBuffer::new();
     let mut extra = ExtraData::new();
     extra.set_joint_angles(angles, true);
-    sync(usb, &mut image, &extra, context)
+    sync(usb, &image, &extra, context)
 }
