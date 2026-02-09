@@ -179,6 +179,32 @@ bot.sync()?;
 | `set_joint_angles_easy(angles)` | 设置舵机角度（默认启用） |
 | `get_joint_angles()` | 获取当前角度 |
 
+## 示例程序
+
+### 测试图案示例
+
+生成随机色块测试图案并同时控制舵机运动。
+
+```bash
+cargo run --example test_pattern
+```
+
+功能：
+- 每 2 秒切换一次随机色块图案（40x40 平铺）
+- 所有关节同时循环运动 ±20 度
+
+### 图片显示示例
+
+从文件加载图片并显示到屏幕上。
+
+```bash
+# 1. 将图片文件命名为 test.png 放入项目根目录
+# 2. 运行示例
+cargo run --example display_image
+```
+
+支持格式：PNG、JPG、BMP 等常见图片格式，程序会自动缩放到 240x240。
+
 ## 构建
 
 ```bash
