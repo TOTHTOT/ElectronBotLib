@@ -3,6 +3,7 @@
 use crate::modules::constants::{FRAME_HEIGHT, FRAME_SIZE, FRAME_WIDTH};
 use crate::modules::types::Color;
 use image::DynamicImage;
+use rand::Rng;
 
 /// 图片缓冲区（用于 ElectronBot 显示屏）。
 #[derive(Debug, Clone)]
@@ -152,6 +153,50 @@ impl ImageBuffer {
     /// 获取原始数据可变引用。
     pub fn as_mut_data(&mut self) -> &mut [u8] {
         &mut self.data
+    }
+
+    /// 生成随机色块测试图案（40x40 色块平铺）。
+    ///
+    /// # 参数
+    ///
+    /// * `rng` - 随机数生成器引用
+    /// * `block_size` - 色块大小（默认 40）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use rand::Rng;
+    /// use electron_bot::ImageBuffer;
+    ///
+    /// let mut rng = rand::thread_rng();
+    /// let mut buffer = ImageBuffer::new();
+    /// buffer.render_test_pattern(&mut rng, 40);
+    /// ```
+    pub fn render_test_pattern<R: Rng>(&mut self, rng: &mut R, block_size: usize) {
+        // 清空背景为黑色
+        self.clear(Color::Black);
+
+        let cols = FRAME_WIDTH / block_size;
+        let rows = FRAME_HEIGHT / block_size;
+
+        for row in 0..rows {
+            for col in 0..cols {
+                let r = rng.gen_range(80..=255);
+                let g = rng.gen_range(80..=255);
+                let b = rng.gen_range(80..=255);
+                let x = col * block_size;
+                let y = row * block_size;
+                self.fill_rect(x, y, block_size, block_size, Color::Custom(r, g, b));
+            }
+        }
+    }
+
+    /// 生成随机色块测试图案（使用默认随机源）。
+    pub fn render_test_pattern_with_rng(block_size: usize) -> Self {
+        let mut rng = rand::thread_rng();
+        let mut buffer = Self::new();
+        buffer.render_test_pattern(&mut rng, block_size);
+        buffer
     }
 }
 
