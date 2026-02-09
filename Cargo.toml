@@ -1,0 +1,12 @@
+[package]
+name = "electron-bot-rusb"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dependencies]
+thiserror = "2"
+image = "0.25"
+rusb = "0.9"
