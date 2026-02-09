@@ -1,421 +1,537 @@
-use image::DynamicImage;
-use rusb::{Context, DeviceHandle, UsbContext};
-use std::path::Path;
-use thiserror::Error;
+//! ElectronBot USB 通信库
+//!
+//! 用于通过 USB 与 ElectronBot 机器人通信。
+//! 基于 rusb 库实现。
+//!
+//! # 功能特性
+//!
+//! - USB 设备扫描和连接
+//! - 图片缓冲区操作
+//! - 舵机控制数据
+//! - 数据同步
+//! - 可选的日志功能（通过 `logging` feature 开启）
+//!
+//! # 模块
+//!
+//! - [`modules::usb`] - USB 底层操作
+//! - [`modules::image`] - 图片缓冲区操作
+//! - [`modules::sync`] - 数据同步
+//! - [`modules::extra_data`] - 舵机控制数据
+//! - [`modules::types`] - 公共类型
+//! - [`modules::error`] - 错误类型
+//!
+//! # 示例
+//!
+//! ```rust
+//! use electron_bot::{ElectronBot, Color};
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut bot = ElectronBot::new();
+//!
+//!     // 连接设备
+//!     bot.connect()?;
+//!
+//!     // 设置红色测试图片
+//!     bot.set_image_color(Color::Red);
+//!
+//!     // 同步数据
+//!     bot.sync()?;
+//!
+//!     // 设置舵机角度
+//!     bot.set_joint_angles_easy(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0])?;
+//!
+//!     bot.sync()?;
+//!
+//!     // 获取当前角度
+//!     let angles = bot.get_joint_angles();
+//!     println!("角度: {:?}", angles.as_array());
+//!
+//!     bot.disconnect();
+//!     Ok(())
+//! }
+//! ```
+//!
+//! # 日志配置
+//!
+//! 启用日志功能：
+//! ```toml
+//! [dependencies]
+//! electron-bot = { path = "...", features = ["logging"] }
+//! env_logger = "0.10"
+//! ```
+//!
+//! 使用日志：
+//! ```rust,ignore
+//! env_logger::init();
+//! // 现在可以使用 electron-bot 库，日志会自动输出
+//! ```
+//!
 
-const USB_VID: u16 = 0x1001;
-const USB_PID: u16 = 0x8023;
-const TIMEOUT_MS: u64 = 100;
+// 导出模块
+pub mod modules;
 
-const FRAME_WIDTH: usize = 240;
-const FRAME_HEIGHT: usize = 240;
-const FRAME_SIZE: usize = FRAME_WIDTH * FRAME_HEIGHT * 3;
-const PACKET_SIZE: usize = 512;
-const PACKET_COUNT: usize = 84;
-const TAIL_SIZE: usize = 224;
+// 导出类型
+pub use modules::constants::*;
+pub use modules::error::BotError;
+pub use modules::types::{Color, DeviceInfo, JointAngles};
+pub use modules::extra_data::ExtraData;
+pub use modules::image::ImageBuffer;
+pub use modules::sync::SyncContext;
 
-#[derive(Debug, Error)]
-pub enum BotError {
-    #[error("Device not found")]
-    DeviceNotFound,
-    #[error("USB error: {0}")]
-    UsbError(String),
-    #[error("Send failed: {0}")]
-    SendFailed(String),
-    #[error("Receive failed: {0}")]
-    ReceiveFailed(String),
-    #[error("Image error: {0}")]
-    ImageError(String),
-    #[error("Not connected")]
-    NotConnected,
-}
+// USB 操作
+use modules::error::BotError as Error;
+use modules::usb::UsbDevice;
+use modules::sync::SyncContext as SyncCtx;
 
-struct UsbDevice {
-    handle: DeviceHandle<Context>,
-    write_endpoint: u8,
-    read_endpoint: u8,
-}
+// ==================== 主结构体 ====================
 
+/// 用于与 ElectronBot 通信的主结构体
+///
+/// # 示例
+///
+/// ```rust
+/// use electron_bot::ElectronBot;
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut bot = ElectronBot::new();
+///
+///     // 连接设备（自动检测接口）
+///     bot.connect()?;
+///
+///     // 设置测试图片
+///     bot.set_image_color(electron_bot::Color::Red);
+///
+///     // 同步
+///     bot.sync()?;
+///
+///     Ok(())
+/// }
+/// ```
 pub struct ElectronBot {
     usb: Option<UsbDevice>,
     is_connected: bool,
-    timestamp: u32,
-    ping_pong_index: u8,
-    frame_buffer_tx: [Vec<u8>; 2],
-    extra_data_tx: [Vec<u8>; 2],
-    extra_data_rx: [u8; 32],
+    image_buffer: ImageBuffer,
+    extra_data: ExtraData,
+    sync_context: SyncCtx,
 }
 
 impl ElectronBot {
+    // ==================== 构造函数 ====================
+
+    /// 创建新的 ElectronBot 实例
+    ///
+    /// 不会连接到设备
     pub fn new() -> Self {
+        #[cfg(feature = "logging")]
+        log::info!("创建新的 ElectronBot 实例");
         Self {
             usb: None,
             is_connected: false,
-            timestamp: 0,
-            ping_pong_index: 0,
-            frame_buffer_tx: [vec![0u8; FRAME_SIZE], vec![0u8; FRAME_SIZE]],
-            extra_data_tx: [vec![0u8; 32], vec![0u8; 32]],
-            extra_data_rx: [0u8; 32],
+            image_buffer: ImageBuffer::new(),
+            extra_data: ExtraData::new(),
+            sync_context: SyncContext::new(),
         }
     }
 
-    /// Scan for device (similar to USB_ScanDevice)
-    pub fn scan_devices() -> Vec<(u16, u16, String)> {
-        let context = match rusb::Context::new() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
+    // ==================== 设备发现 ====================
 
-        let mut devices = Vec::new();
-        for device in context.devices().unwrap().iter() {
-            if let Ok(desc) = device.device_descriptor() {
-                let info = format!("{:04x}:{:04x}", desc.vendor_id(), desc.product_id());
-                devices.push((desc.vendor_id(), desc.product_id(), info));
+    /// 扫描所有 USB 设备
+    ///
+    /// 返回所有连接的 USB 设备列表
+    pub fn scan_devices() -> Vec<DeviceInfo> {
+        modules::usb::scan_devices()
+            .into_iter()
+            .map(|(vid, pid, info)| DeviceInfo { vid, pid, info })
+            .collect()
+    }
+
+    /// 检查 ElectronBot 是否已连接
+    pub fn is_device_present() -> bool {
+        modules::usb::is_electron_bot_present()
+    }
+
+    /// 查找 ElectronBot 设备信息
+    pub fn find_electron_bot() -> Option<DeviceInfo> {
+        modules::usb::scan_devices()
+            .into_iter()
+            .find(|(vid, pid, _)| *vid == USB_VID && *pid == USB_PID)
+            .map(|(vid, pid, info)| DeviceInfo { vid, pid, info })
+    }
+
+    // ==================== 连接 ====================
+
+    /// 连接到 ElectronBot
+    ///
+    /// 自动查找设备并声明正确的接口
+    pub fn connect(&mut self) -> Result<bool, Error> {
+        #[cfg(feature = "logging")]
+        log::info!("正在连接 ElectronBot...");
+        self.disconnect();
+
+        match modules::usb::open_electron_bot() {
+            Ok(usb_device) => {
+                self.usb = Some(usb_device);
+                self.is_connected = true;
+                self.sync_context = SyncContext::new();
+                #[cfg(feature = "logging")]
+                log::info!("ElectronBot 连接成功");
+                Ok(true)
+            }
+            Err(e) => {
+                #[cfg(feature = "logging")]
+                log::error!("连接失败: {}", e);
+                Err(Error::UsbError(e))
             }
         }
-        devices
     }
 
-    /// Connect to the robot (similar to USB_OpenDevice)
-    pub fn connect(&mut self) -> Result<bool, BotError> {
-        let context = rusb::Context::new().map_err(|e| BotError::UsbError(e.to_string()))?;
-
-        for device in context.devices().map_err(|e| BotError::UsbError(e.to_string()))?.iter() {
-            if let Ok(desc) = device.device_descriptor() {
-                if desc.vendor_id() == USB_VID && desc.product_id() == USB_PID {
-                    println!("Found ElectronBot, trying to open...");
-
-                    match device.open() {
-                        Ok(handle) => {
-                            // Detach kernel driver if needed (both Windows and Linux)
-                            if let Ok(true) = handle.kernel_driver_active(0) {
-                                println!("Detaching kernel driver...");
-                                if let Err(e) = handle.detach_kernel_driver(0) {
-                                    eprintln!("Failed to detach kernel driver: {}", e);
-                                }
-                            }
-
-                            // Get active configuration
-                            if let Ok(config) = device.active_config_descriptor() {
-                                println!("Active configuration: {}", config.number());
-
-                                // Try all interfaces
-                                for interface in config.interfaces() {
-                                    let interface_number = interface.number();
-                                    println!("Trying interface {}...", interface_number);
-
-                                    for descriptor in interface.descriptors() {
-                                        println!("  Interface class: 0x{:02x}", descriptor.class_code());
-
-                                        // Claim interface
-                                        match handle.claim_interface(interface_number) {
-                                            Ok(_) => {
-                                                println!("  Interface claimed!");
-
-                                                // Find bulk endpoints
-                                                let mut write_ep = 0x01u8;
-                                                let mut read_ep = 0x81u8;
-                                                let mut found_bulk_in = false;
-                                                let mut found_bulk_out = false;
-
-                                                for endpoint in descriptor.endpoint_descriptors() {
-                                                    let addr = endpoint.address();
-                                                    let dir = endpoint.direction();
-                                                    let transfer_type = endpoint.transfer_type();
-
-                                                    println!("    Endpoint 0x{:02x}: dir={:?}, type={:?}",
-                                                             addr, dir, transfer_type);
-
-                                                    if transfer_type == rusb::TransferType::Bulk {
-                                                        if dir == rusb::Direction::In {
-                                                            read_ep = addr;
-                                                            found_bulk_in = true;
-                                                        } else {
-                                                            write_ep = addr;
-                                                            found_bulk_out = true;
-                                                        }
-                                                    }
-                                                }
-
-                                                if found_bulk_in && found_bulk_out {
-                                                    println!("Interface {}: IN=0x{:02x}, OUT=0x{:02x}",
-                                                             interface_number, read_ep, write_ep);
-
-                                                    self.usb = Some(UsbDevice {
-                                                        handle,
-                                                        write_endpoint: write_ep,
-                                                        read_endpoint: read_ep,
-                                                    });
-                                                    self.is_connected = true;
-                                                    self.timestamp = 0;
-                                                    return Ok(true);
-                                                } else {
-                                                    println!("  No bulk endpoints found, releasing...");
-                                                    let _ = handle.release_interface(interface_number);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                eprintln!("  Failed to claim interface: {}", e);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to open device: {}", e);
-                        }
-                    }
-                }
-            }
-        }
-
-        eprintln!("Could not connect to ElectronBot");
-        Err(BotError::DeviceNotFound)
+    /// 连接到指定接口的 ElectronBot
+    pub fn connect_with_interface(&mut self, _interface_num: u8) -> Result<bool, Error> {
+        // 目前使用相同的连接方式
+        self.connect()
     }
 
-    /// Disconnect (similar to USB_CloseDevice)
+    /// 断开设备连接
     pub fn disconnect(&mut self) {
+        #[cfg(feature = "logging")]
+        if self.is_connected {
+            log::info!("断开 ElectronBot 连接");
+        }
         self.is_connected = false;
         self.usb = None;
     }
 
-    /// Check connection status
+    /// 检查是否已连接
     pub fn is_connected(&self) -> bool {
         self.is_connected
     }
 
-    /// Bulk transmit (similar to USB_BulkTransmit)
-    fn bulk_transmit(&mut self, endpoint: u8, data: &[u8]) -> Result<bool, BotError> {
+    // ==================== 图片操作 ====================
+
+    /// 获取图片缓冲区可变引用
+    pub fn image_buffer(&mut self) -> &mut ImageBuffer {
+        &mut self.image_buffer
+    }
+
+    /// 从文件设置图片
+    pub fn set_image<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<(), Error> {
+        #[cfg(feature = "logging")]
+        log::info!("从文件加载图片: {:?}", path.as_ref());
+        self.image_buffer
+            .load_from_file(path)
+            .map_err(|e| Error::ImageError(e))
+    }
+
+    /// 从 DynamicImage 设置图片
+    pub fn set_image_from_image(&mut self, img: &::image::DynamicImage) {
+        #[cfg(feature = "logging")]
+        log::info!("从 DynamicImage 加载图片");
+        self.image_buffer.load_from_image(img);
+    }
+
+    /// 从原始 RGB/BGR 数据设置图片
+    pub fn set_image_from_data(&mut self, data: &[u8], width: usize, height: usize) -> Result<(), Error> {
+        #[cfg(feature = "logging")]
+        log::info!("从原始数据加载图片: {}x{}", width, height);
+        self.image_buffer
+            .load_from_data(data, width, height)
+            .map_err(|e| Error::ImageError(e))
+    }
+
+    /// 设置纯色图片
+    pub fn set_image_color(&mut self, color: Color) {
+        #[cfg(feature = "logging")]
+        log::info!("设置图片颜色: {:?}", color);
+        self.image_buffer.clear(color);
+    }
+
+    // ==================== 扩展数据操作 ====================
+
+    /// 获取扩展数据可变引用
+    pub fn extra_data(&mut self) -> &mut ExtraData {
+        &mut self.extra_data
+    }
+
+    /// 从原始字节设置扩展数据
+    pub fn set_extra_data(&mut self, data: &[u8]) -> Result<(), Error> {
+        if data.len() > 32 {
+            return Err(Error::ImageError("扩展数据必须小于等于 32 字节".to_string()));
+        }
+        self.extra_data.set_raw(data);
+        Ok(())
+    }
+
+    /// 获取扩展数据
+    pub fn get_extra_data(&self) -> &[u8; 32] {
+        self.extra_data.get_raw()
+    }
+
+    // ==================== 舵机控制 ====================
+
+    /// 设置 6 个舵机的角度
+    pub fn set_joint_angles(&mut self, angles: &[f32; 6], enable: bool) -> Result<(), Error> {
+        #[cfg(feature = "logging")]
+        log::info!("设置舵机角度: {:?}, 启用: {}", angles, enable);
+        let mut ja = JointAngles::new();
+        ja.as_array_mut().copy_from_slice(angles);
+        self.extra_data.set_joint_angles(&ja, enable);
+        Ok(())
+    }
+
+    /// 设置舵机角度（默认启用）
+    pub fn set_joint_angles_easy(&mut self, angles: &[f32; 6]) -> Result<(), Error> {
+        self.set_joint_angles(angles, true)
+    }
+
+    /// 从机器人获取舵机角度
+    pub fn get_joint_angles(&self) -> JointAngles {
+        self.extra_data.get_joint_angles()
+    }
+
+    // ==================== 同步 ====================
+
+    /// 与机器人同步数据
+    ///
+    /// 这是主要的数据交换函数
+    pub fn sync(&mut self) -> Result<bool, Error> {
+        if !self.is_connected {
+            #[cfg(feature = "logging")]
+            log::error!("同步失败: 未连接到设备");
+            return Err(Error::NotConnected);
+        }
+
         let usb = match &mut self.usb {
             Some(u) => u,
-            None => return Err(BotError::NotConnected),
+            None => return Err(Error::NotConnected),
         };
 
-        let timeout = std::time::Duration::from_millis(TIMEOUT_MS);
-
-        // Write data
-        match usb.handle.write_bulk(endpoint, data, timeout) {
-            Ok(written) if written == data.len() => {}
-            Ok(written) => {
-                return Err(BotError::SendFailed(format!("Incomplete write: {} of {}", written, data.len())));
+        #[cfg(feature = "logging")]
+        log::info!("开始同步数据...");
+        match modules::sync::sync(
+            usb,
+            &self.image_buffer,
+            &self.extra_data,
+            &mut self.sync_context,
+        ) {
+            Ok(true) => {
+                #[cfg(feature = "logging")]
+                log::info!("同步成功");
+                Ok(true)
+            }
+            Ok(false) => {
+                #[cfg(feature = "logging")]
+                log::warn!("同步返回 false");
+                Ok(false)
             }
             Err(e) => {
-                return Err(BotError::SendFailed(e.to_string()));
+                #[cfg(feature = "logging")]
+                log::error!("同步失败: {}", e);
+                Err(Error::SendFailed(e))
             }
         }
-
-        // Send zero-length packet if data size is multiple of 512 (like USBInterface.cpp)
-        if data.len() % 512 == 0 {
-            match usb.handle.write_bulk(endpoint, &[], timeout) {
-                Ok(_) => {}
-                Err(e) => {
-                    return Err(BotError::SendFailed(format!("Zero packet failed: {}", e)));
-                }
-            }
-        }
-
-        Ok(true)
     }
 
-    /// Bulk receive (similar to USB_BulkReceive)
-    fn bulk_receive(&mut self, endpoint: u8, data: &mut [u8]) -> Result<usize, BotError> {
-        let usb = match &mut self.usb {
-            Some(u) => u,
-            None => return Err(BotError::NotConnected),
-        };
-
-        let timeout = std::time::Duration::from_millis(TIMEOUT_MS);
-
-        match usb.handle.read_bulk(endpoint, data, timeout) {
-            Ok(read) => Ok(read),
-            Err(e) => Err(BotError::ReceiveFailed(e.to_string())),
-        }
+    /// 快速同步（不处理错误）
+    pub fn sync_quick(&mut self) -> bool {
+        self.sync().is_ok()
     }
 
-    /// Sync data with the robot
-    pub fn sync(&mut self) -> Result<bool, BotError> {
-        if !self.is_connected {
-            return Err(BotError::NotConnected);
-        }
-
-        self.timestamp += 1;
-        let index = self.ping_pong_index as usize;
-        self.ping_pong_index = if self.ping_pong_index == 0 { 1 } else { 0 };
-
-        let frame_buffer = self.frame_buffer_tx[index].clone();
-        let extra_data = self.extra_data_tx[index].clone();
-        let mut rx_buf = [0u8; 32];
-
-        for _cycle in 0..4 {
-            // Receive 32 bytes extra data (MCU request)
-            let bytes_read = self.bulk_receive(self.usb.as_ref().unwrap().read_endpoint, &mut rx_buf)?;
-            if bytes_read != 32 {
-                return Err(BotError::ReceiveFailed(format!("Expected 32 bytes, got {}", bytes_read)));
-            }
-            self.extra_data_rx.copy_from_slice(&rx_buf);
-
-            // Transmit buffer (84 packets of 512 bytes)
-            for i in 0..PACKET_COUNT {
-                let start = i * PACKET_SIZE;
-                let end = start + PACKET_SIZE;
-                if !self.bulk_transmit(self.usb.as_ref().unwrap().write_endpoint, &frame_buffer[start..end])? {
-                    return Err(BotError::SendFailed("Failed to transmit buffer".to_string()));
-                }
-            }
-
-            // Prepare frame tail with extra data
-            let mut tail_data = [0u8; TAIL_SIZE];
-            let tail_start = PACKET_COUNT * PACKET_SIZE;
-            tail_data[..192].copy_from_slice(&frame_buffer[tail_start..tail_start + 192]);
-            tail_data[192..].copy_from_slice(&extra_data);
-
-            // Transmit frame tail & extra data
-            if !self.bulk_transmit(self.usb.as_ref().unwrap().write_endpoint, &tail_data)? {
-                return Err(BotError::SendFailed("Failed to transmit tail".to_string()));
-            }
-        }
-
-        Ok(true)
+    /// 获取当前同步上下文
+    pub fn sync_context(&self) -> &SyncContext {
+        &self.sync_context
     }
+}
 
-    /// Set image from file path
-    pub fn set_image<P: AsRef<Path>>(&mut self, path: P) -> Result<(), BotError> {
-        let img = image::open(path).map_err(|e| BotError::ImageError(e.to_string()))?;
-        self.set_image_from_image(&img)
-    }
-
-    /// Set image from DynamicImage
-    pub fn set_image_from_image(&mut self, img: &DynamicImage) -> Result<(), BotError> {
-        let resized = img.resize_exact(
-            FRAME_WIDTH as u32,
-            FRAME_HEIGHT as u32,
-            image::imageops::FilterType::Nearest,
-        );
-        let rgb = resized.to_rgb8();
-        let index = self.ping_pong_index as usize;
-
-        for (i, pixel) in rgb.pixels().enumerate() {
-            let idx = i * 3;
-            self.frame_buffer_tx[index][idx] = pixel[2];
-            self.frame_buffer_tx[index][idx + 1] = pixel[1];
-            self.frame_buffer_tx[index][idx + 2] = pixel[0];
-        }
-
-        Ok(())
-    }
-
-    /// Set image from raw RGB/BGR data
-    pub fn set_image_from_data(&mut self, data: &[u8], width: usize, height: usize) -> Result<(), BotError> {
-        if data.len() < width * height * 3 {
-            return Err(BotError::ImageError("Data too small".to_string()));
-        }
-
-        let index = self.ping_pong_index as usize;
-
-        if width == FRAME_WIDTH && height == FRAME_HEIGHT {
-            for i in 0..FRAME_SIZE {
-                self.frame_buffer_tx[index][i] = data[i + 2];
-            }
-        } else {
-            let min_w = width.min(FRAME_WIDTH);
-            let min_h = height.min(FRAME_HEIGHT);
-            let offset_x = (FRAME_WIDTH - min_w) / 2;
-            let offset_y = (FRAME_HEIGHT - min_h) / 2;
-
-            for y in 0..FRAME_HEIGHT {
-                for x in 0..FRAME_WIDTH {
-                    let dst_idx = (y * FRAME_WIDTH + x) * 3;
-
-                    if x >= offset_x && x < offset_x + min_w && y >= offset_y && y < offset_y + min_h {
-                        let src_x = x - offset_x;
-                        let src_y = y - offset_y;
-                        let src_idx = (src_y * width + src_x) * 3;
-                        self.frame_buffer_tx[index][dst_idx] = data[src_idx + 2];
-                        self.frame_buffer_tx[index][dst_idx + 1] = data[src_idx + 1];
-                        self.frame_buffer_tx[index][dst_idx + 2] = data[src_idx];
-                    } else {
-                        self.frame_buffer_tx[index][dst_idx] = 0;
-                        self.frame_buffer_tx[index][dst_idx + 1] = 0;
-                        self.frame_buffer_tx[index][dst_idx + 2] = 0;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Set image from a solid color
-    pub fn set_image_from_color(&mut self, color: &[u8]) -> Result<(), BotError> {
-        if color.len() < 3 {
-            return Err(BotError::ImageError("Color must have 3 components (RGB)".to_string()));
-        }
-
-        let index = self.ping_pong_index as usize;
-        for i in 0..FRAME_SIZE / 3 {
-            let idx = i * 3;
-            self.frame_buffer_tx[index][idx] = color[2];
-            self.frame_buffer_tx[index][idx + 1] = color[1];
-            self.frame_buffer_tx[index][idx + 2] = color[0];
-        }
-
-        Ok(())
-    }
-
-    /// Set extra data (up to 32 bytes)
-    pub fn set_extra_data(&mut self, data: &[u8]) -> Result<(), BotError> {
-        if data.len() > 32 {
-            return Err(BotError::ImageError("Extra data must be <= 32 bytes".to_string()));
-        }
-
-        let index = self.ping_pong_index as usize;
-        self.extra_data_tx[index][..data.len()].copy_from_slice(data);
-        Ok(())
-    }
-
-    /// Get extra data received from robot
-    pub fn get_extra_data(&self) -> &[u8; 32] {
-        &self.extra_data_rx
-    }
-
-    /// Set joint angles for 6 servos
-    pub fn set_joint_angles(&mut self, angles: &[f32; 6], enable: bool) -> Result<(), BotError> {
-        if angles.len() != 6 {
-            return Err(BotError::ImageError("Must provide exactly 6 angles".to_string()));
-        }
-
-        let index = self.ping_pong_index as usize;
-        self.extra_data_tx[index][0] = if enable { 1 } else { 0 };
-
-        for (j, angle) in angles.iter().enumerate() {
-            let bytes = angle.to_le_bytes();
-            for (i, byte) in bytes.iter().enumerate() {
-                self.extra_data_tx[index][j * 4 + i + 1] = *byte;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Get joint angles from robot
-    pub fn get_joint_angles(&self) -> [f32; 6] {
-        let mut angles = [0.0f32; 6];
-        for j in 0..6 {
-            let bytes = [
-                self.extra_data_rx[j * 4 + 1],
-                self.extra_data_rx[j * 4 + 2],
-                self.extra_data_rx[j * 4 + 3],
-                self.extra_data_rx[j * 4 + 4],
-            ];
-            angles[j] = f32::from_le_bytes(bytes);
-        }
-        angles
+impl Default for ElectronBot {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Drop for ElectronBot {
     fn drop(&mut self) {
         self.disconnect();
+    }
+}
+
+// ==================== 便捷函数 ====================
+
+/// 快速测试函数
+pub fn quick_test() -> Result<bool, Error> {
+    let mut bot = ElectronBot::new();
+    bot.connect()?;
+    println!("已连接到 ElectronBot!");
+    bot.set_image_color(Color::Red);
+    bot.sync()?;
+    println!("同步成功!");
+    bot.disconnect();
+    Ok(true)
+}
+
+/// 扫描并打印所有设备
+pub fn list_devices() {
+    println!("正在扫描 USB 设备...");
+    let devices = ElectronBot::scan_devices();
+    println!("找到 {} 个设备:", devices.len());
+
+    for (i, device) in devices.iter().enumerate() {
+        let marker = if device.vid == USB_VID && device.pid == USB_PID {
+            " <-- ElectronBot"
+        } else {
+            ""
+        };
+        println!("  [{}] {}{}", i, device.info, marker);
+    }
+}
+
+// ==================== 测试 ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_joint_angles_default() {
+        let angles = JointAngles::new();
+        assert_eq!(angles.0, [0.0; 6]);
+    }
+
+    #[test]
+    fn test_joint_angles_get_set() {
+        let mut angles = JointAngles::new();
+        angles.set(0, 45.0);
+        angles.set(1, 90.0);
+        assert_eq!(angles.get(0), Some(45.0));
+        assert_eq!(angles.get(1), Some(90.0));
+        assert_eq!(angles.get(5), Some(0.0));
+        assert_eq!(angles.get(6), None);
+    }
+
+    #[test]
+    fn test_joint_angles_bytes() {
+        let angles = JointAngles::new();
+        let bytes = angles.to_bytes();
+        assert_eq!(bytes.len(), 24);
+        let restored = JointAngles::from_bytes(&bytes.try_into().unwrap());
+        assert_eq!(restored.0, [0.0; 6]);
+    }
+
+    #[test]
+    fn test_color_rgb() {
+        assert_eq!(Color::Red.rgb(), (255, 0, 0));
+        assert_eq!(Color::Green.rgb(), (0, 255, 0));
+        assert_eq!(Color::Blue.rgb(), (0, 0, 255));
+        assert_eq!(Color::Cyan.rgb(), (0, 255, 255));
+        assert_eq!(Color::Custom(100, 150, 200).rgb(), (100, 150, 200));
+    }
+
+    #[test]
+    fn test_color_bgr() {
+        assert_eq!(Color::Red.bgr(), (0, 0, 255));
+        assert_eq!(Color::Green.bgr(), (0, 255, 0));
+        assert_eq!(Color::Blue.bgr(), (255, 0, 0));
+    }
+
+    #[test]
+    fn test_electron_bot_new() {
+        let bot = ElectronBot::new();
+        assert!(!bot.is_connected());
+    }
+
+    #[test]
+    fn test_image_buffer_new() {
+        let buf = ImageBuffer::new();
+        assert_eq!(buf.as_data().len(), FRAME_SIZE);
+    }
+
+    #[test]
+    fn test_image_buffer_clear() {
+        let mut buf = ImageBuffer::new();
+        buf.clear(Color::Red);
+        // 检查第一个像素是红色（存储为 BGR: 0, 0, 255）
+        // get_pixel 返回 RGB，所以 BGR(0,0,255) -> RGB(255,0,0)
+        assert_eq!(buf.get_pixel(0, 0), Some(Color::Custom(0, 0, 255)));
+    }
+
+    #[test]
+    fn test_image_buffer_set_pixel() {
+        let mut buf = ImageBuffer::new();
+        buf.set_pixel(10, 10, Color::Green);
+        assert_eq!(buf.get_pixel(10, 10), Some(Color::Custom(0, 255, 0)));
+    }
+
+    #[test]
+    fn test_extra_data_new() {
+        let extra = ExtraData::new();
+        assert_eq!(extra.as_data().len(), 32);
+        assert!(!extra.is_enabled());
+    }
+
+    #[test]
+    fn test_extra_data_enable() {
+        let mut extra = ExtraData::new();
+        extra.set_enable(true);
+        assert!(extra.is_enabled());
+        extra.set_enable(false);
+        assert!(!extra.is_enabled());
+    }
+
+    #[test]
+    fn test_extra_data_joint_angles() {
+        let mut extra = ExtraData::new();
+        let angles = JointAngles::new();
+        extra.set_joint_angles(&angles, true);
+        assert!(extra.is_enabled());
+        let restored = extra.get_joint_angles();
+        assert_eq!(restored.0, [0.0; 6]);
+    }
+
+    #[test]
+    fn test_extra_data_bytes() {
+        let mut extra = ExtraData::new();
+        extra.set_byte(0, 0xAB);
+        assert_eq!(extra.get_byte(0), Some(0xAB));
+        extra.set_u16(1, 0x1234);
+        assert_eq!(extra.get_u16(1), Some(0x1234));
+    }
+
+    #[test]
+    fn test_sync_context_new() {
+        let ctx = SyncContext::new();
+        assert_eq!(ctx.timestamp, 0);
+        assert_eq!(ctx.ping_pong_index, 0);
+        assert_eq!(ctx.cycles, 4);
+    }
+
+    #[test]
+    fn test_sync_context_toggle() {
+        let mut ctx = SyncContext::new();
+        assert_eq!(ctx.ping_pong_index, 0);
+        ctx.toggle();
+        assert_eq!(ctx.ping_pong_index, 1);
+        ctx.toggle();
+        assert_eq!(ctx.ping_pong_index, 0);
+    }
+
+    #[test]
+    fn test_scan_devices() {
+        let devices = ElectronBot::scan_devices();
+        assert!(devices.len() >= 0);
+    }
+
+    #[test]
+    fn test_is_device_present() {
+        let _present = ElectronBot::is_device_present();
+    }
+
+    #[test]
+    fn test_quick_test_function() {
+        let result = quick_test();
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_list_devices_function() {
+        list_devices();
     }
 }

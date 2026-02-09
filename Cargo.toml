@@ -1,12 +1,21 @@
 [package]
-name = "electron-bot-rusb"
+name = "electron-bot"
 version = "0.1.0"
 edition = "2021"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+description = "ElectronBot USB 通信库"
+authors = ["ElectronBot"]
 
 [dependencies]
 thiserror = "2"
 image = "0.25"
 rusb = "0.9"
+log = { version = "0.4", optional = true }
+
+[features]
+default = ["std"]
+std = []
+logging = ["log"]
+
+[lib]
+name = "electron_bot"
+path = "src/lib.rs"
