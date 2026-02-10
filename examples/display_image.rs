@@ -13,10 +13,10 @@
 //! - 同时控制舵机做循环运动
 
 use electron_bot::ElectronBot;
-use std::thread;
-use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 /// 图片文件路径
 const IMAGE_PATH: &str = "./assets/test.png";
@@ -116,8 +116,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match bot.sync() {
             Ok(_) => {
                 if motion_step % 20 == 0 {
-                    println!("角度: [{:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}]",
-                        angles[0], angles[1], angles[2], angles[3], angles[4], angles[5]);
+                    println!(
+                        "角度: [{:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}]",
+                        angles[0], angles[1], angles[2], angles[3], angles[4], angles[5]
+                    );
                 }
             }
             Err(e) => {

@@ -93,7 +93,11 @@ impl UsbDevice {
     }
 
     /// 带重试的接收。
-    pub fn receive_with_retry(&mut self, data: &mut [u8], max_retries: usize) -> Result<usize, String> {
+    pub fn receive_with_retry(
+        &mut self,
+        data: &mut [u8],
+        max_retries: usize,
+    ) -> Result<usize, String> {
         for retry in 0..max_retries {
             match self.receive(data) {
                 Ok(read) if read > 0 => return Ok(read),
@@ -170,7 +174,11 @@ pub fn is_electron_bot_present() -> bool {
 /// 打开 ElectronBot 设备并声明接口。
 pub fn open_electron_bot() -> Result<UsbDevice, String> {
     #[cfg(feature = "logging")]
-    log::info!("Opening ElectronBot device (VID={:04x}, PID={:04x})...", USB_VID, USB_PID);
+    log::info!(
+        "Opening ElectronBot device (VID={:04x}, PID={:04x})...",
+        USB_VID,
+        USB_PID
+    );
 
     let context = rusb::Context::new().map_err(|e| {
         #[cfg(feature = "logging")]
@@ -178,11 +186,15 @@ pub fn open_electron_bot() -> Result<UsbDevice, String> {
         format!("创建上下文失败: {}", e)
     })?;
 
-    for device in context.devices().map_err(|e| {
-        #[cfg(feature = "logging")]
-        log::error!("Failed to get devices: {}", e);
-        format!("获取设备失败: {}", e)
-    })?.iter() {
+    for device in context
+        .devices()
+        .map_err(|e| {
+            #[cfg(feature = "logging")]
+            log::error!("Failed to get devices: {}", e);
+            format!("获取设备失败: {}", e)
+        })?
+        .iter()
+    {
         if let Ok(desc) = device.device_descriptor() {
             if desc.vendor_id() == USB_VID && desc.product_id() == USB_PID {
                 #[cfg(feature = "logging")]
@@ -225,7 +237,10 @@ pub fn open_electron_bot() -> Result<UsbDevice, String> {
                             }
 
                             #[cfg(feature = "logging")]
-                            log::info!("Interface {} claimed, searching for bulk endpoints...", interface_number);
+                            log::info!(
+                                "Interface {} claimed, searching for bulk endpoints...",
+                                interface_number
+                            );
 
                             // 查找批量端点
                             let mut write_ep = 0x01u8;
@@ -239,8 +254,12 @@ pub fn open_electron_bot() -> Result<UsbDevice, String> {
                                 let transfer_type = endpoint.transfer_type();
 
                                 #[cfg(feature = "logging")]
-                                log::debug!("  Endpoint 0x{:02x}: dir={:?}, type={:?}",
-                                           addr, dir, transfer_type);
+                                log::debug!(
+                                    "  Endpoint 0x{:02x}: dir={:?}, type={:?}",
+                                    addr,
+                                    dir,
+                                    transfer_type
+                                );
 
                                 if transfer_type == rusb::TransferType::Bulk {
                                     if dir == rusb::Direction::In {
@@ -259,14 +278,20 @@ pub fn open_electron_bot() -> Result<UsbDevice, String> {
 
                             if found_in && found_out {
                                 #[cfg(feature = "logging")]
-                                log::info!("Successfully opened ElectronBot: IN=0x{:02x}, OUT=0x{:02x}",
-                                          read_ep, write_ep);
+                                log::info!(
+                                    "Successfully opened ElectronBot: IN=0x{:02x}, OUT=0x{:02x}",
+                                    read_ep,
+                                    write_ep
+                                );
                                 return Ok(UsbDevice::new(handle, write_ep, read_ep));
                             }
 
                             // 如果没有批量端点，释放接口
                             #[cfg(feature = "logging")]
-                            log::warn!("No bulk endpoints found on interface {}, releasing...", interface_number);
+                            log::warn!(
+                                "No bulk endpoints found on interface {}, releasing...",
+                                interface_number
+                            );
                             let _ = handle.release_interface(interface_number);
                         }
                     }

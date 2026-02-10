@@ -12,10 +12,10 @@
 //! - 所有关节同时循环运动 ±20 度
 
 use electron_bot::ElectronBot;
-use std::thread;
-use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 /// 色块大小
 const BLOCK_SIZE: usize = 40;
@@ -100,7 +100,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 更新并同步图案
         if let Some(pattern) = &current_pattern {
-            bot.image_buffer().as_mut_data().copy_from_slice(pattern.as_data());
+            bot.image_buffer()
+                .as_mut_data()
+                .copy_from_slice(pattern.as_data());
             match bot.sync_quick() {
                 true => {}
                 false => {
@@ -134,8 +136,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match bot.sync() {
             Ok(_) => {
                 if motion_step % 20 == 0 {
-                    println!("角度: [{:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}]",
-                        angles[0], angles[1], angles[2], angles[3], angles[4], angles[5]);
+                    println!(
+                        "角度: [{:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}, {:6.1}]",
+                        angles[0], angles[1], angles[2], angles[3], angles[4], angles[5]
+                    );
                 }
             }
             Err(e) => {

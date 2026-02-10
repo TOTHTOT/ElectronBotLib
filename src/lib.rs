@@ -73,15 +73,15 @@ pub mod modules;
 // 导出类型
 pub use modules::constants::*;
 pub use modules::error::BotError;
-pub use modules::types::{Color, DeviceInfo, JointAngles};
 pub use modules::extra_data::ExtraData;
 pub use modules::image::ImageBuffer;
 pub use modules::sync::SyncContext;
+pub use modules::types::{Color, DeviceInfo, JointAngles};
 
 // USB 操作
 use modules::error::BotError as Error;
-use modules::usb::UsbDevice;
 use modules::sync::SyncContext as SyncCtx;
+use modules::usb::UsbDevice;
 
 // ==================== 主结构体 ====================
 
@@ -230,7 +230,12 @@ impl ElectronBot {
     }
 
     /// 从原始 RGB/BGR 数据设置图片
-    pub fn set_image_from_data(&mut self, data: &[u8], width: usize, height: usize) -> Result<(), Error> {
+    pub fn set_image_from_data(
+        &mut self,
+        data: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<(), Error> {
         #[cfg(feature = "logging")]
         log::info!("从原始数据加载图片: {}x{}", width, height);
         self.image_buffer
@@ -255,7 +260,9 @@ impl ElectronBot {
     /// 从原始字节设置扩展数据
     pub fn set_extra_data(&mut self, data: &[u8]) -> Result<(), Error> {
         if data.len() > 32 {
-            return Err(Error::ImageError("扩展数据必须小于等于 32 字节".to_string()));
+            return Err(Error::ImageError(
+                "扩展数据必须小于等于 32 字节".to_string(),
+            ));
         }
         self.extra_data.set_raw(data);
         Ok(())

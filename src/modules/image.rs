@@ -49,7 +49,11 @@ impl ImageBuffer {
             return None;
         }
         let idx = (y * FRAME_WIDTH + x) * 3;
-        Some(Color::Custom(self.data[idx + 2], self.data[idx + 1], self.data[idx]))
+        Some(Color::Custom(
+            self.data[idx + 2],
+            self.data[idx + 1],
+            self.data[idx],
+        ))
     }
 
     /// 填充矩形。
@@ -101,7 +105,12 @@ impl ImageBuffer {
     }
 
     /// 从原始 RGB/BGR 数据加载。
-    pub fn load_from_data(&mut self, data: &[u8], width: usize, height: usize) -> Result<(), String> {
+    pub fn load_from_data(
+        &mut self,
+        data: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<(), String> {
         if data.len() < width * height * 3 {
             return Err("数据太小".to_string());
         }
@@ -111,9 +120,9 @@ impl ImageBuffer {
             for i in 0..FRAME_SIZE / 3 {
                 let dst_idx = i * 3;
                 let src_idx = i * 3;
-                self.data[dst_idx] = data[src_idx + 2];     // B -> R
+                self.data[dst_idx] = data[src_idx + 2]; // B -> R
                 self.data[dst_idx + 1] = data[src_idx + 1]; // G -> G
-                self.data[dst_idx + 2] = data[src_idx];     // R -> B
+                self.data[dst_idx + 2] = data[src_idx]; // R -> B
             }
         } else {
             // 缩放到合适大小
@@ -126,7 +135,11 @@ impl ImageBuffer {
                 for x in 0..FRAME_WIDTH {
                     let dst_idx = (y * FRAME_WIDTH + x) * 3;
 
-                    if x >= offset_x && x < offset_x + min_w && y >= offset_y && y < offset_y + min_h {
+                    if x >= offset_x
+                        && x < offset_x + min_w
+                        && y >= offset_y
+                        && y < offset_y + min_h
+                    {
                         let src_x = x - offset_x;
                         let src_y = y - offset_y;
                         let src_idx = (src_y * width + src_x) * 3;

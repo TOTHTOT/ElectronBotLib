@@ -49,7 +49,12 @@ impl Default for SyncContext {
 }
 
 /// 尝试接收指定长度的数据，带重试
-fn receive_with_retry(usb: &mut UsbDevice, buf: &mut [u8], expected_len: usize, max_retries: u32) -> Result<usize, String> {
+fn receive_with_retry(
+    usb: &mut UsbDevice,
+    buf: &mut [u8],
+    expected_len: usize,
+    max_retries: u32,
+) -> Result<usize, String> {
     for retry in 0..max_retries {
         match usb.receive(buf) {
             Ok(_len) if _len == expected_len => {
@@ -72,7 +77,10 @@ fn receive_with_retry(usb: &mut UsbDevice, buf: &mut [u8], expected_len: usize, 
         }
     }
 
-    Err(format!("Failed to receive {} bytes after {} retries", expected_len, max_retries))
+    Err(format!(
+        "Failed to receive {} bytes after {} retries",
+        expected_len, max_retries
+    ))
 }
 
 /// 发送数据，带重试
@@ -103,7 +111,11 @@ pub fn sync(
     context.toggle();
 
     #[cfg(feature = "logging")]
-    log::info!("Sync started: timestamp={}, index={}", context.timestamp, context.current_index());
+    log::info!(
+        "Sync started: timestamp={}, index={}",
+        context.timestamp,
+        context.current_index()
+    );
 
     let data = image_buffer.as_data();
     let extra = extra_data.as_data();
@@ -128,7 +140,11 @@ pub fn sync(
 
         // 2. 发送 84 个 512 字节包（带偏移）
         #[cfg(feature = "logging")]
-        log::debug!("Transmitting {} packets with offset {}...", PACKET_COUNT, frame_buffer_offset);
+        log::debug!(
+            "Transmitting {} packets with offset {}...",
+            PACKET_COUNT,
+            frame_buffer_offset
+        );
 
         for i in 0..PACKET_COUNT {
             let start = frame_buffer_offset + i * PACKET_SIZE;
@@ -173,7 +189,11 @@ pub fn sync(
 }
 
 /// 快速同步（仅图片）。
-pub fn sync_image(usb: &mut UsbDevice, image_buffer: &ImageBuffer, context: &mut SyncContext) -> SyncResult {
+pub fn sync_image(
+    usb: &mut UsbDevice,
+    image_buffer: &ImageBuffer,
+    context: &mut SyncContext,
+) -> SyncResult {
     #[cfg(feature = "logging")]
     log::info!("Starting image sync...");
     let extra = ExtraData::new();
