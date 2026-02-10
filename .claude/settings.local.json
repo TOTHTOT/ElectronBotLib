@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo build:*)"
+    ]
+  }
+}

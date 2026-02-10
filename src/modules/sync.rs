@@ -48,6 +48,51 @@ impl Default for SyncContext {
     }
 }
 
+/// 尝试接收指定长度的数据，带重试
+fn receive_with_retry(usb: &mut UsbDevice, buf: &mut [u8], expected_len: usize, max_retries: u32) -> Result<usize, String> {
+    for retry in 0..max_retries {
+        match usb.receive(buf) {
+            Ok(_len) if _len == expected_len => {
+                #[cfg(feature = "logging")]
+                log::debug!("Received {} bytes on attempt {}", expected_len, retry + 1);
+                return Ok(_len);
+            }
+            Ok(_len) => {
+                #[cfg(feature = "logging")]
+                log::warn!("Received {} bytes, expected {}", _len, expected_len);
+            }
+            Err(_) => {
+                #[cfg(feature = "logging")]
+                log::warn!("Receive failed (attempt {}/{})", retry + 1, max_retries);
+            }
+        }
+
+        if retry < max_retries - 1 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    Err(format!("Failed to receive {} bytes after {} retries", expected_len, max_retries))
+}
+
+/// 发送数据，带重试
+fn transmit_with_retry(usb: &mut UsbDevice, data: &[u8], max_retries: u32) -> Result<(), String> {
+    for retry in 0..max_retries {
+        if usb.transmit(data).is_ok() {
+            return Ok(());
+        }
+
+        #[cfg(feature = "logging")]
+        log::warn!("Transmit failed (attempt {}/{})", retry + 1, max_retries);
+
+        if retry < max_retries - 1 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    Err("Transmit failed after retries".to_string())
+}
+
 /// 执行同步操作。
 pub fn sync(
     usb: &mut UsbDevice,
@@ -63,101 +108,63 @@ pub fn sync(
     let data = image_buffer.as_data();
     let extra = extra_data.as_data();
 
+    // 计算每次循环的偏移增量：84 * 512 + 192 = 43008 + 192 = 43200
+    let _cycle_increment = PACKET_COUNT * PACKET_SIZE + 192;
+    let mut frame_buffer_offset = 0usize;
+
     for _cycle in 0..context.cycles {
         #[cfg(feature = "logging")]
         log::debug!("Sync cycle {}/{}", _cycle + 1, context.cycles);
 
-        // 准备尾数据
-        let mut tail_data = [0u8; TAIL_SIZE];
-        let tail_start = PACKET_COUNT * PACKET_SIZE;
-        tail_data[..192].copy_from_slice(&data[tail_start..tail_start + 192]);
-        tail_data[192..].copy_from_slice(extra);
-
-        // 尝试接收数据
+        // 1. 接收 32 字节 extra data（MCU 发送的请求）
         let mut rx_buf = [0u8; 32];
-        let mut received = false;
-
-        for _retry in 0..3 {
+        if let Err(e) = receive_with_retry(usb, &mut rx_buf, 32, 5) {
             #[cfg(feature = "logging")]
-            log::debug!("Receive attempt {}/3", _retry + 1);
-
-            // 尝试发送小包触发通信
-            if usb.transmit(&tail_data[..8]).is_ok() {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                match usb.receive(&mut rx_buf) {
-                    Ok(32) => {
-                        #[cfg(feature = "logging")]
-                        log::debug!("Received 32 bytes from device");
-                        received = true;
-                        break;
-                    }
-                    Ok(_read) => {
-                        #[cfg(feature = "logging")]
-                        log::warn!("Received {} bytes, expected 32", _read);
-                    }
-                    Err(_e) => {
-                        #[cfg(feature = "logging")]
-                        log::warn!("Receive failed");
-                    }
-                }
-            }
-
-            // 直接尝试接收
-            match usb.receive(&mut rx_buf) {
-                Ok(32) => {
-                    #[cfg(feature = "logging")]
-                    log::debug!("Received 32 bytes from device");
-                    received = true;
-                    break;
-                }
-                Ok(_read) => {
-                    #[cfg(feature = "logging")]
-                    log::warn!("Received {} bytes, expected 32", _read);
-                }
-                Err(_e) => {
-                    #[cfg(feature = "logging")]
-                    log::warn!("Receive failed");
-                }
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            log::warn!("Packet receive failed: {}", e);
+            // Suppress unused variable warning when logging is disabled
+            #[cfg(not(feature = "logging"))]
+            let _ = e;
         }
 
-        if !received {
-            #[cfg(feature = "logging")]
-            log::warn!("Failed to receive data in cycle {}", cycle + 1);
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(2));
-
-        // 发送缓冲区（84 个 512 字节包）
+        // 2. 发送 84 个 512 字节包（带偏移）
         #[cfg(feature = "logging")]
-        log::debug!("Transmitting {} packets...", PACKET_COUNT);
+        log::debug!("Transmitting {} packets with offset {}...", PACKET_COUNT, frame_buffer_offset);
+
         for i in 0..PACKET_COUNT {
-            let start = i * PACKET_SIZE;
+            let start = frame_buffer_offset + i * PACKET_SIZE;
             let end = start + PACKET_SIZE;
-            match usb.transmit(&data[start..end]) {
-                Ok(_) => {}
-                Err(_e) => {
-                    #[cfg(feature = "logging")]
-                    log::error!("Failed to transmit packet {}: {}", i, _e);
-                }
+
+            if transmit_with_retry(usb, &data[start..end], 3).is_err() {
+                #[cfg(feature = "logging")]
+                log::error!("Failed to transmit packet {}", i);
             }
+
+            // 发送间隔（根据 SDK 调整）
             std::thread::sleep(std::time::Duration::from_micros(50));
         }
 
-        // 发送尾数据
-        match usb.transmit(&tail_data) {
-            Ok(_) => {
-                #[cfg(feature = "logging")]
-                log::debug!("Tail data transmitted");
-            }
-            Err(_e) => {
-                #[cfg(feature = "logging")]
-                log::error!("Failed to transmit tail data");
-            }
+        // 更新偏移量（84 * 512 = 43008）
+        frame_buffer_offset += PACKET_COUNT * PACKET_SIZE;
+
+        // 3. 准备尾数据（192 字节从当前偏移取 + 32 字节 extra data）
+        let mut tail_data = [0u8; TAIL_SIZE];
+        tail_data[..192].copy_from_slice(&data[frame_buffer_offset..frame_buffer_offset + 192]);
+        tail_data[192..].copy_from_slice(extra);
+
+        // 更新偏移量（加上 192）
+        frame_buffer_offset += 192;
+
+        // 4. 发送尾包（224 字节）
+        #[cfg(feature = "logging")]
+        log::debug!("Transmitting tail packet (224 bytes)...");
+
+        if transmit_with_retry(usb, &tail_data, 3).is_err() {
+            #[cfg(feature = "logging")]
+            log::error!("Failed to transmit tail data");
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // 循环间隔
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     #[cfg(feature = "logging")]
