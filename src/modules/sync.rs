@@ -154,9 +154,6 @@ pub fn sync(
                 #[cfg(feature = "logging")]
                 log::error!("Failed to transmit packet {}", i);
             }
-
-            // 发送间隔（根据 SDK 调整）
-            std::thread::sleep(std::time::Duration::from_micros(50));
         }
 
         // 更新偏移量（84 * 512 = 43008）
@@ -178,9 +175,6 @@ pub fn sync(
             #[cfg(feature = "logging")]
             log::error!("Failed to transmit tail data");
         }
-
-        // 循环间隔
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     #[cfg(feature = "logging")]
